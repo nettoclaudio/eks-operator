@@ -219,6 +219,36 @@ func createNodeGroup(config *eksv1.EKSClusterConfig, group eksv1.NodeGroup, eksS
 		}
 	}
 
+	var customLaunchTemplate bool
+	if lt != nil && aws.StringValue(lt.ID) == "" && aws.StringValue(lt.Name) != "" {
+		// In this case, the user has specified her/his own launch template name, we
+		// won't try to create it, we just need find out your ID on AWS.
+		lts, err := ec2Service.DescribeLaunchTemplates(&ec2.DescribeLaunchTemplatesInput{
+			LaunchTemplateNames: []*string{lt.Name},
+		})
+		if err != nil {
+			logrus.Errorf("failed to describe launch templates by name [%s] on AWS", *lt.Name)
+			return "", err
+		}
+
+		if len(lts.LaunchTemplates) > 1 {
+			return "", fmt.Errorf("too many launch templates found with name [%s]", *lt.Name)
+		}
+
+		lt.ID = lts.LaunchTemplates[0].LaunchTemplateId
+		logrus.Infof("launch template ID [%s] found by name [%s] on AWS", *lt.ID, *lt.Name)
+
+		if aws.Int64Value(lt.Version) == 0 {
+			// If the user has not specified a launch template version, we use
+			// the default one.
+			lt.Version = lts.LaunchTemplates[0].DefaultVersionNumber
+			logrus.Infof("using the launch template version default [%d]", *lt.Version)
+		}
+
+		logrus.Infof("using the launch template [%s] in version [%d]", *lt.ID, *lt.Version)
+		customLaunchTemplate = true
+	}
+
 	var launchTemplateVersion *string
 	if aws.Int64Value(lt.Version) != 0 {
 		launchTemplateVersion = aws.String(strconv.FormatInt(*lt.Version, 10))
@@ -233,7 +263,7 @@ func createNodeGroup(config *eksv1.EKSClusterConfig, group eksv1.NodeGroup, eksS
 		nodeGroupCreateInput.InstanceTypes = group.SpotInstanceTypes
 	}
 
-	if aws.StringValue(group.ImageID) == "" {
+	if !customLaunchTemplate && aws.StringValue(group.ImageID) == "" {
 		if gpu := group.Gpu; aws.BoolValue(gpu) {
 			nodeGroupCreateInput.AmiType = aws.String(eks.AMITypesAl2X8664Gpu)
 		} else {
