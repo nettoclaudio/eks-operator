@@ -1052,6 +1052,7 @@ func (h *Handler) updateUpstreamClusterState(upstreamSpec *eksv1.EKSClusterConfi
 				return config, err
 			}
 		}
+
 		ltVersion, err := createNodeGroup(config, ng, eksService, ec2Service, svc)
 		if err != nil {
 			return config, err
@@ -1114,10 +1115,20 @@ func (h *Handler) updateUpstreamClusterState(upstreamSpec *eksv1.EKSClusterConfi
 			ClusterName:   aws.String(config.Spec.DisplayName),
 		}
 
+		var customLaunchTemplate bool
 		if upstreamNg.LaunchTemplate != nil {
 			upstreamTemplateVersion := aws.Int64Value(upstreamNg.LaunchTemplate.Version)
 			var err error
 			lt := ng.LaunchTemplate
+
+			if lt != nil && aws.StringValue(lt.ID) == "" && aws.StringValue(lt.Name) != "" {
+				lt, err = getLaunchTemplateByName(ec2Service, aws.StringValue(lt.Name), lt.Version)
+				if err != nil {
+					return config, err
+				}
+
+				customLaunchTemplate = true
+			}
 
 			if lt == nil && config.Status.ManagedLaunchTemplateID == aws.StringValue(upstreamNg.LaunchTemplate.ID) {
 				// In this case, Rancher is managing the launch template, so we check to see if we need a new version.
@@ -1134,7 +1145,7 @@ func (h *Handler) updateUpstreamClusterState(upstreamSpec *eksv1.EKSClusterConfi
 			if lt != nil && aws.Int64Value(lt.Version) != upstreamTemplateVersion {
 				ngVersionInput.LaunchTemplate = &eks.LaunchTemplateSpecification{
 					Id:      lt.ID,
-					Version: aws.String(strconv.FormatInt(*lt.Version, 10)),
+					Version: aws.String(strconv.FormatInt(aws.Int64Value(lt.Version), 10)),
 				}
 				if upstreamTemplateVersion > 0 {
 					templateVersionsToDelete[aws.StringValue(upstreamNg.NodegroupName)] = strconv.FormatInt(upstreamTemplateVersion, 10)
@@ -1142,7 +1153,7 @@ func (h *Handler) updateUpstreamClusterState(upstreamSpec *eksv1.EKSClusterConfi
 			}
 		}
 
-		if ng.Version != nil {
+		if !customLaunchTemplate && ng.Version != nil {
 			if aws.StringValue(upstreamNg.Version) != desiredNgVersions[aws.StringValue(ng.NodegroupName)] {
 				ngVersionInput.Version = aws.String(desiredNgVersions[aws.StringValue(ng.NodegroupName)])
 			}
